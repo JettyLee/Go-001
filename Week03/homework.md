@@ -3,70 +3,55 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
+	"github.com/gin-gonic/gin"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
-
-	"golang.org/x/sync/errgroup"
+	"syscall"
+	"time"
 )
 
 func main() {
-	signalChan := make(chan os.Signal)
-	signal.Notify(signalChan)
-	stop := make(chan string)
-
-	g, ctx := errgroup.WithContext(context.Background())
-	g.Go(func() error {
-		defer fmt.Println("httpserver is stoping")
-		mux := http.NewServeMux()
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("hello"))
+	router := gin.Default()
+	router.GET("/ping", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"message": "pong",
 		})
-
-		server := http.Server{
-			Addr:    ":8080",
-			Handler: mux,
-		}
-
-		errChan := make(chan string)
-		go func() {
-			defer fmt.Println("server is stop....")
-
-			err := server.ListenAndServe()
-			if err != nil {
-				errChan <- err.Error()
-			}
-		}()
-
-		errInfo := ""
-		select {
-		case <-stop:
-			server.Close()
-		case errInfo = <-errChan:
-			close(stop)
-		}
-
-		return errors.New(errInfo)
 	})
 
-	g.Go(func() error {
-		select {
-		case s := <-signalChan:
-			close(stop)
-			return errors.New(s.String())
-		case <-stop:
-			return nil
-		}
-
-	})
-
-	fmt.Println("httpserver waiting...")
-	err := g.Wait()
-	if err != nil {
-		fmt.Println(err.Error())
+	srv := &http.Server{
+		Addr:    ":8080",
+		Handler: router,
 	}
-	fmt.Println(ctx.Err())
+
+
+	// Initializing the server in a goroutine so that
+	// it won't block the graceful shutdown handling below
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %s\n", err)
+		}
+	}()
+
+	// Wait for interrupt signal to gracefully shutdown the server with
+	// a timeout of 5 seconds.
+	quit := make(chan os.Signal)
+	// kill (no param) default send syscall.SIGTERM
+	// kill -2 is syscall.SIGINT
+	// kill -9 is syscall.SIGKILL but can't be catch, so don't need add it
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	// The context is used to inform the server it has 5 seconds to finish
+	// the request it is currently handling
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatal("Server forced to shutdown:", err)
+	}
+
+	log.Println("Server exiting")
 }
 ```
